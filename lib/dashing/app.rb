@@ -57,14 +57,6 @@ at_exit do
   File.write(settings.history_file, settings.history.to_yaml)
 end
 
-get '/' do
-  protected!
-  dashboard = settings.default_dashboard || first_dashboard
-  raise Exception.new('There are no dashboards available') if not dashboard
-
-  redirect "/" + dashboard
-end
-
 get '/events', provides: 'text/event-stream' do
   protected!
   response.headers['X-Accel-Buffering'] = 'no' # Disable buffering for nginx
@@ -77,12 +69,20 @@ end
 
 get '/:dashboard' do
   protected!
-  tilt_html_engines.each do |suffix, _|
-    file = File.join(settings.views, "#{params[:dashboard]}.#{suffix}")
-    return render(suffix.to_sym, params[:dashboard].to_sym) if File.exist? file
-  end
+  if !settings.auth_token
+    tilt_html_engines.each do |suffix, _|
+      file = File.join(settings.views, "#{params[:dashboard]}.#{suffix}")
+      return render(suffix.to_sym, params[:dashboard].to_sym) if File.exist? file
+    end
+  elsif "#{params[:dashboard]}" == settings.auth_token
+    dashboard = settings.default_dashboard || first_dashboard
+    raise Exception.new('There are no dashboards available') if not dashboard
 
-  halt 404
+    redirect "/" + dashboard + "/#{params[:dashboard]}"
+  else
+     status 401
+     "HTTP unauthorized\n" 
+  end
 end
 
 post '/dashboards/:id' do
@@ -117,6 +117,29 @@ get '/views/:widget?.html' do
   tilt_html_engines.each do |suffix, engines|
     file = File.join(settings.root, "widgets", params[:widget], "#{params[:widget]}.#{suffix}")
     return engines.first.new(file).render if File.exist? file
+  end
+end
+
+get '/:dashboard/events', provides: 'text/event-stream' do
+  protected!
+  response.headers['X-Accel-Buffering'] = 'no' # Disable buffering for nginx
+  stream :keep_open do |out|
+    settings.connections << out
+    out << latest_events
+    out.callback { settings.connections.delete(out) }
+  end
+end
+
+get '/:dashboard/:auth' do
+  protected!
+  if !settings.auth_token || settings.auth_token == "#{params[:auth]}"
+    tilt_html_engines.each do |suffix, _|
+      file = File.join(settings.views, "#{params[:dashboard]}.#{suffix}")
+      return render(suffix.to_sym, params[:dashboard].to_sym) if File.exist? file
+    end
+  else
+    status 401
+    "Invalid API key\n"
   end
 end
 
